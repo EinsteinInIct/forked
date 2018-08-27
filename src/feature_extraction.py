@@ -1,5 +1,6 @@
 from copy import deepcopy
 from functools import partial
+import gc
 
 import category_encoders as ce
 import numpy as np
@@ -252,6 +253,11 @@ class ApplicationFeatures(BaseTransformer):
                                              'external_sources_max',
                                              'external_sources_sum',
                                              'external_sources_mean',
+
+                                             # below 2 are by einstein
+                                             'external_sources_prod',
+                                             'external_sources_std',
+
                                              'external_sources_nanmedian',
                                              'short_employment',
                                              'young_age',
@@ -261,7 +267,30 @@ class ApplicationFeatures(BaseTransformer):
                                              'credit_per_person',
                                              'credit_per_child',
                                              'credit_per_non_child',
+
+                                             # below by einstein
+                                             'annuity_employ_ratio',
+                                             'annuity_goods_ratio',
+                                             'income_employ_ratio',
+                                             'employ_birth_ratio',
+                                             'income_birth_ratio',
+                                             'credit_employ_ratio',
+                                             'credit_birth_ratio',
+                                             'goods_income_ratio',
+                                             'goods_employ_ratio',
+                                             'good_birth_ratio',
+                                             'ORGANIZATION_TYPE_DEFAULT_RATE',
+                                             'OCCUPATION_TYPE_DEFAULT_RATE'
                                              ]
+    @staticmethod
+    def compute_default_rate(train, col):
+        print('computing default rate for: {}'.format(col))
+        tmp = train[['TARGET', 'SK_ID_CURR', col]].fillna('NAN')
+        default_rate = (
+        tmp[tmp.TARGET == 1].groupby(col).SK_ID_CURR.count() / tmp[tmp.TARGET == 0].groupby(col).SK_ID_CURR.count())
+        train[col + '_DEFAULT_RATE'] = tmp[col].apply(lambda x: default_rate[x])
+        del tmp
+        gc.collect()
 
     def transform(self, X, **kwargs):
         X['annuity_income_percentage'] = X['AMT_ANNUITY'] / X['AMT_INCOME_TOTAL']
@@ -276,6 +305,7 @@ class ApplicationFeatures(BaseTransformer):
         X['income_per_child'] = X['AMT_INCOME_TOTAL'] / (1 + X['CNT_CHILDREN'])
         X['income_per_person'] = X['AMT_INCOME_TOTAL'] / X['CNT_FAM_MEMBERS']
         X['payment_rate'] = X['AMT_ANNUITY'] / X['AMT_CREDIT']
+
         X['phone_to_birth_ratio'] = X['DAYS_LAST_PHONE_CHANGE'] / X['DAYS_BIRTH']
         X['phone_to_employ_ratio'] = X['DAYS_LAST_PHONE_CHANGE'] / X['DAYS_EMPLOYED']
         X['external_sources_weighted'] = X.EXT_SOURCE_1 * 2 + X.EXT_SOURCE_2 * 3 + X.EXT_SOURCE_3 * 4
@@ -285,7 +315,22 @@ class ApplicationFeatures(BaseTransformer):
         X['credit_per_person'] = X['AMT_CREDIT'] / X['CNT_FAM_MEMBERS']
         X['credit_per_child'] = X['AMT_CREDIT'] / (1 + X['CNT_CHILDREN'])
         X['credit_per_non_child'] = X['AMT_CREDIT'] / X['cnt_non_child']
-        for function_name in ['min', 'max', 'sum', 'mean', 'nanmedian']:
+        X['credit_employ_ratio'] = X['AMT_CREDIT'] / (1 + X['DAYS_EMPLOYED'])
+
+        # by einstein
+        X['annuity_employ_ratio'] = X['AMT_ANNUITY'] / (1 + X['DAYS_EMPLOYED'])
+        X['annuity_goods_ratio'] = X['AMT_ANNUITY'] / (1 + X['AMT_GOODS_PRICE'])
+        X['income_employ_ratio'] = X['AMT_INCOME_TOTAL'] / (1 + X['DAYS_EMPLOYED'])
+        X['employ_birth_ratio'] = X['DAYS_EMPLOYED'] / X['DAYS_BIRTH']
+        X['income_birth_ratio'] = X['AMT_INCOME_TOTAL'] / X['DAYS_BIRTH']
+        X['annuity_birth_ratio'] = X['AMT_ANNUITY'] / X['DAYS_BIRTH']
+        X['credit_birth_ratio'] = X['AMT_CREDIT'] / X['DAYS_BIRTH']
+        X['goods_income_ratio'] = X['AMT_GOODS_PRICE'] / X['AMT_INCOME_TOTAL']
+        X['goods_employ_ratio'] = X['AMT_GOODS_PRICE'] / (1 + X['DAYS_EMPLOYED'])
+        X['good_birth_ratio'] = X['AMT_GOODS_PRICE'] / X['DAYS_BIRTH']
+        self.compute_default_rate(X, 'ORGANIZATION_TYPE')
+        self.compute_default_rate(X, 'OCCUPATION_TYPE')
+        for function_name in ['min', 'max', 'sum', 'mean', 'prod', 'std', 'nanmedian']:
             X['external_sources_{}'.format(function_name)] = eval('np.{}'.format(function_name))(
                 X[['EXT_SOURCE_1', 'EXT_SOURCE_2', 'EXT_SOURCE_3']], axis=1)
 
@@ -346,6 +391,67 @@ class BureauFeatures(BasicHandCraftedFeatures):
         features['bureau_overdue_debt_ratio'] = \
             features['bureau_total_customer_overdue'] / features['bureau_total_customer_debt']
 
+        # below by einstein
+        active_groupby = bureau[bureau['CREDIT_ACTIVE'] == 'Active'].groupby(by=['SK_ID_CURR'])
+
+        g = active_groupby['DAYS_CREDIT'].agg('mean').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT': 'bureau_active_days_credit_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['DAYS_CREDIT'].agg('var').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT': 'bureau_active_days_credit_var'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['DAYS_CREDIT_ENDDATE'].agg('mean').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT_ENDDATE': 'bureau_active_days_credit_enddate_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['DAYS_CREDIT_UPDATE'].agg('mean').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT_UPDATE': 'bureau_active_days_credit_update_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['AMT_CREDIT_SUM'].agg('mean').reset_index()
+        g.rename(index=str, columns={'AMT_CREDIT_SUM': 'bureau_active_amt_credit_sum_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['AMT_CREDIT_SUM'].agg('sum').reset_index()
+        g.rename(index=str, columns={'AMT_CREDIT_SUM': 'bureau_active_amt_credit_sum_sum'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['MONTH_BALANCE_SIZE'].agg('mean').reset_index()
+        g.rename(index=str, columns={'MONTH_BALANCE_SIZE': 'bureau_active_month_balance_size_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['AMT_CREDIT_SUM_DEBT'].agg('mean').reset_index()
+        g.rename(index=str, columns={'AMT_CREDIT_SUM_DEBT': 'bureau_active_amt_credit_sum_debt_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = active_groupby['AMT_CREDIT_SUM_DEBT'].agg('sum').reset_index()
+        g.rename(index=str, columns={'AMT_CREDIT_SUM_DEBT': 'bureau_active_amt_credit_sum_debt_sum'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = groupby['DAYS_CREDIT'].agg('var').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT': 'bureau_days_credit_var'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = groupby['DAYS_CREDIT_UPDATE'].agg('mean').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT': 'bureau_days_credit_update_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        closed_groupby = bureau[bureau['CREDIT_ACTIVE'] == 'Closed'].groupby(by=['SK_ID_CURR'])
+
+        g = closed_groupby['DAYS_CREDIT'].agg('mean').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT': 'bureau_closed_days_credit_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = closed_groupby['DAYS_CREDIT_ENDDATE'].agg('mean').reset_index()
+        g.rename(index=str, columns={'DAYS_CREDIT_ENDDATE': 'bureau_closed_days_credit_enddate_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
+        g = closed_groupby['AMT_CREDIT_MAX_OVERDUE'].agg('mean').reset_index()
+        g.rename(index=str, columns={'AMT_CREDIT_MAX_OVERDUE': 'bureau_closed_amt_credit_max_overdue_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
+
         self.features = features
         return self
 
@@ -383,7 +489,7 @@ class CreditCardBalanceFeatures(BasicHandCraftedFeatures):
         features = features.merge(g, on=['SK_ID_CURR'], how='left')
 
         g = groupby['AMT_DRAWINGS_ATM_CURRENT'].agg('sum').reset_index()
-        g.rename(index=str, columns={'AMT_DRAWINGS_ATM_CURRENT': 'credit_card_drawings_atm'}, inplace=True)
+        g.rename(index=str, columns={'AMT_DRAWINGS_ATM_CURRENT': 'credit_card_drawings_atm_sum'}, inplace=True)
         features = features.merge(g, on=['SK_ID_CURR'], how='left')
 
         g = groupby['AMT_DRAWINGS_CURRENT'].agg('sum').reset_index()
@@ -405,6 +511,11 @@ class CreditCardBalanceFeatures(BasicHandCraftedFeatures):
 
         features['credit_card_installments_per_loan'] = (
             features['credit_card_total_installments'] / features['credit_card_number_of_loans'])
+
+        # below by einstein
+        g = groupby['AMT_DRAWINGS_ATM_CURRENT'].agg('mean').reset_index()
+        g.rename(index=str, columns={'AMT_DRAWINGS_ATM_CURRENT': 'credit_card_drawings_atm_mean'}, inplace=True)
+        features = features.merge(g, on=['SK_ID_CURR'], how='left')
 
         return features
 
@@ -629,6 +740,13 @@ class InstallmentPaymentsFeatures(BasicHandCraftedFeatures):
         installments['installment_paid_over_amount'] = installments['AMT_PAYMENT'] - installments['AMT_INSTALMENT']
         installments['installment_paid_over'] = (installments['installment_paid_over_amount'] > 0).astype(int)
 
+        # by einstein
+        installments['installment_amt_payment'] = installments['AMT_PAYMENT']
+        installments['installment_days_entry_payment'] = installments['DAYS_ENTRY_PAYMENT']
+        installments['installment_dbd'] = installments['DBD']
+        installments['DPD_PAY_INSTALL_NUM'] = installments.NUM_INSTALMENT_NUMBER * (installments.DAYS_INSTALMENT < installments.DAYS_ENTRY_PAYMENT)
+        installments['installment_dpd_days_install_num'] = installments['DPD_PAY_INSTALL_NUM']
+
         features = pd.DataFrame({'SK_ID_CURR': installments['SK_ID_CURR'].unique()})
         groupby = installments.groupby(['SK_ID_CURR'])
 
@@ -702,6 +820,16 @@ class InstallmentPaymentsFeatures(BasicHandCraftedFeatures):
             features = add_features_in_group(features, gr_period, 'installment_paid_over',
                                              ['count', 'mean'],
                                              period_name)
+            features = add_features_in_group(features, gr_period, 'installment_amt_payment',
+                                             ['sum', 'min'],
+                                             period_name)
+            features = add_features_in_group(features, gr_period, 'installment_dbd',
+                                             ['sum', 'std', 'mean', ],
+                                             period_name)
+            features = add_features_in_group(features, gr_period, 'installment_dpd_days_install_num',
+                                             ['sum', 'std', 'mean'],
+                                             period_name)
+
         return features
 
     @staticmethod
